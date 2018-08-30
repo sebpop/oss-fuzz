@@ -68,10 +68,11 @@ mkdir -p $WORK/llvm
 cd $WORK/llvm
 cmake -G "Ninja" \
       -DLIBCXX_ENABLE_SHARED=OFF -DLIBCXX_ENABLE_STATIC_ABI_LIBRARY=ON \
-      -DCMAKE_BUILD_TYPE=Release -DLLVM_TARGETS_TO_BUILD="X86" \
+      -DCMAKE_BUILD_TYPE=Release -DLLVM_TARGETS_TO_BUILD="X86;AArch64" \
       $SRC/llvm
 ninja
 ninja install
+cd $WORK
 rm -rf $WORK/llvm
 
 mkdir -p $WORK/msan
@@ -91,7 +92,128 @@ cmake -G "Ninja" \
       $SRC/llvm
 ninja cxx
 ninja install-cxx
+cd $WORK
 rm -rf $WORK/msan
+
+# Install in /usr/aarch64-linux-gnu a sysroot for AArch64.
+# The AArch64 sysroot will not be removed at the end of the script.
+apt-get install -y binutils-aarch64-linux-gnu libc6-dev-arm64-cross \
+        libc6-arm64-cross libstdc++6-arm64-cross libgcc1-arm64-cross \
+        libgcc-5-dev-arm64-cross libstdc++-5-dev-arm64-cross
+
+# FIXME: When clang is invoked for linking, it tries to find libraries with the
+# full path within the sysroot. For now, fixed by creating a symlink to make the
+# linker find the libs.
+ln -s /usr /usr/aarch64-linux-gnu/usr
+
+# Create wrapper scripts for aarch64 clang/clang++.
+cat <<EOF > /usr/local/bin/aarch64-clang
+#!/bin/bash
+/usr/local/bin/clang --target=aarch64-linux-gnu --sysroot=/usr/aarch64-linux-gnu \$@; rc=\$?
+exit \$rc
+EOF
+
+cat <<EOF > /usr/local/bin/aarch64-clang++
+#!/bin/bash
+/usr/local/bin/clang++ --target=aarch64-linux-gnu --sysroot=/usr/aarch64-linux-gnu -cxx-isystem "/usr/aarch64-linux-gnu/include/c++/5.4.0" -cxx-isystem "/usr/aarch64-linux-gnu/include/c++/5.4.0/aarch64-linux-gnu" -D_GLIBCXX_INCLUDE_NEXT_C_HEADERS \$@; rc=\$?
+exit \$rc
+EOF
+
+cat <<EOF > /usr/local/bin/aarch64-libcxx-clang++
+#!/bin/bash
+/usr/local/bin/clang++ --target=aarch64-linux-gnu --sysroot=/usr/aarch64-linux-gnu -cxx-isystem "/usr/aarch64-linux-gnu/include/c++/v1" -cxx-isystem "/usr/aarch64-linux-gnu/include" -cxx-isystem "/usr/local/lib/clang/8.0.0/include" -stdlib=libc++ \$@; rc=\$?
+exit \$rc
+EOF
+
+chmod +x /usr/local/bin/aarch64-clang /usr/local/bin/aarch64-clang++ /usr/local/bin/aarch64-libcxx-clang++
+
+# Cross compile compiler-rt and libc++ for AArch64.
+mkdir -p $WORK/aarch64
+cd $WORK/aarch64
+cmake -G "Ninja" \
+      -DLLVM_CONFIG_PATH=/usr/local/bin/llvm-config \
+      -DCOMPILER_RT_DEFAULT_TARGET_TRIPLE=aarch64-linux-gnu \
+      -DCMAKE_C_COMPILER=/usr/local/bin/aarch64-clang \
+      -DCMAKE_CXX_COMPILER=/usr/local/bin/aarch64-clang++ \
+      -DCMAKE_AR=/usr/bin/aarch64-linux-gnu-ar \
+      -DCMAKE_NM=/usr/bin/aarch64-linux-gnu-nm \
+      -DCMAKE_LINKER=/usr/bin/aarch64-linux-gnu-ld \
+      -DCMAKE_OBJCOPY=/usr/bin/aarch64-linux-gnu-objcopy \
+      -DCMAKE_OBJDUMP=/usr/bin/aarch64-linux-gnu-objdump \
+      -DCMAKE_RANLIB=/usr/bin/aarch64-linux-gnu-ranlib \
+      -DCMAKE_STRIP=/usr/bin/aarch64-linux-gnu-strip \
+      -DCMAKE_INSTALL_PREFIX=/usr/local/lib/clang/8.0.0 \
+      $SRC/llvm/projects/compiler-rt
+
+ninja
+ninja install
+cd $WORK
+rm -rf $WORK/aarch64
+
+# AArch64 cross build libc++.
+mkdir -p $WORK/aarch64-libcxx
+cd $WORK/aarch64-libcxx
+
+cmake -G "Ninja" \
+      -DLLVM_DEFAULT_TARGET_TRIPLE=aarch64-linux-gnu \
+      -DLLVM_TARGET_ARCH=AArch64 \
+      -DLLVM_TARGETS_TO_BUILD=AArch64 \
+      -DLIBCXX_ENABLE_SHARED=OFF \
+      -DLIBCXX_ENABLE_STATIC_ABI_LIBRARY=ON \
+      -DCMAKE_CROSSCOMPILING=True \
+      -DCMAKE_C_COMPILER=/usr/local/bin/aarch64-clang \
+      -DCMAKE_CXX_COMPILER=/usr/local/bin/aarch64-clang++ \
+      -DCMAKE_INSTALL_PREFIX=/usr/aarch64-linux-gnu \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_AR=/usr/bin/aarch64-linux-gnu-ar \
+      -DCMAKE_NM=/usr/bin/aarch64-linux-gnu-nm \
+      -DCMAKE_LINKER=/usr/bin/aarch64-linux-gnu-ld \
+      -DCMAKE_OBJCOPY=/usr/bin/aarch64-linux-gnu-objcopy \
+      -DCMAKE_OBJDUMP=/usr/bin/aarch64-linux-gnu-objdump \
+      -DCMAKE_RANLIB=/usr/bin/aarch64-linux-gnu-ranlib \
+      -DCMAKE_STRIP=/usr/bin/aarch64-linux-gnu-strip \
+      $SRC/llvm
+
+ninja cxx
+ninja install-cxx
+cd $WORK
+rm -rf $WORK/aarch64-libcxx
+
+# AArch64 cross build libc++ with MSan.
+mkdir -p $WORK/aarch64-msan
+cd $WORK/aarch64-msan
+
+# https://github.com/google/oss-fuzz/issues/1099
+cat <<EOF > $WORK/aarch64-msan/blacklist.txt
+fun:__gxx_personality_*
+EOF
+
+cmake -G "Ninja" \
+      -DLLVM_USE_SANITIZER=Memory \
+      -DLLVM_DEFAULT_TARGET_TRIPLE=aarch64-linux-gnu \
+      -DLLVM_TARGET_ARCH=AArch64 \
+      -DLLVM_TARGETS_TO_BUILD=AArch64 \
+      -DLIBCXX_ENABLE_SHARED=OFF \
+      -DLIBCXX_ENABLE_STATIC_ABI_LIBRARY=ON \
+      -DCMAKE_CROSSCOMPILING=True \
+      -DCMAKE_CXX_FLAGS="-fsanitize-blacklist=$WORK/aarch64-msan/blacklist.txt" \
+      -DCMAKE_C_COMPILER=/usr/local/bin/aarch64-clang \
+      -DCMAKE_CXX_COMPILER=/usr/local/bin/aarch64-clang++ \
+      -DCMAKE_INSTALL_PREFIX=/usr/msan/aarch64-linux-gnu \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_AR=/usr/bin/aarch64-linux-gnu-ar \
+      -DCMAKE_NM=/usr/bin/aarch64-linux-gnu-nm \
+      -DCMAKE_LINKER=/usr/bin/aarch64-linux-gnu-ld \
+      -DCMAKE_OBJCOPY=/usr/bin/aarch64-linux-gnu-objcopy \
+      -DCMAKE_OBJDUMP=/usr/bin/aarch64-linux-gnu-objdump \
+      -DCMAKE_RANLIB=/usr/bin/aarch64-linux-gnu-ranlib \
+      -DCMAKE_STRIP=/usr/bin/aarch64-linux-gnu-strip \
+      $SRC/llvm
+
+ninja cxx
+ninja install-cxx
+cd $WORK
+rm -rf $WORK/aarch64-msan
 
 # Pull trunk libfuzzer.
 cd $SRC && svn co https://llvm.org/svn/llvm-project/compiler-rt/trunk/lib/fuzzer libfuzzer
