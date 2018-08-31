@@ -15,9 +15,15 @@
 ################################################################################
 
 FROM gcr.io/oss-fuzz-base/base-builder
-MAINTAINER inferno@chromium.org
+MAINTAINER sebpop@gmail.com
 RUN apt-get update && apt-get install -y make autoconf automake libtool
 
-RUN git clone --depth 1 https://github.com/madler/zlib.git
+# The code of the fuzzers was not accepted upstream.
+# First clone from a repo that contains the code of the fuzzers.
+RUN git clone -b fuzz https://github.com/sebpop/zlib.git
+
+# Then pull rebase the last patches from upstream.
+RUN git pull -r https://github.com/madler/zlib.git develop
+
 WORKDIR zlib
-COPY build.sh zlib_uncompress_fuzzer.cc $SRC/
+COPY build.sh $SRC/
