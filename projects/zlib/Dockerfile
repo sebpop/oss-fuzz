@@ -17,13 +17,6 @@
 FROM gcr.io/oss-fuzz-base/base-builder
 MAINTAINER sebpop@gmail.com
 RUN apt-get update && apt-get install -y make autoconf automake libtool
-
-# The code of the fuzzers was not accepted upstream.
-# First clone from a repo that contains the code of the fuzzers.
-RUN git clone -b fuzz https://github.com/sebpop/zlib.git
-
-# Then pull rebase the last patches from upstream.
-RUN git pull -r https://github.com/madler/zlib.git develop
-
+RUN git clone -b develop https://github.com/madler/zlib.git
 WORKDIR zlib
-COPY build.sh $SRC/
+COPY build.sh *_fuzzer.c $SRC/
